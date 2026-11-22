@@ -1,3 +1,4 @@
+using System.IO;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
@@ -16,7 +17,8 @@ public class ModEntry : Mod
     public override void Entry(IModHelper helper)
     {
         _shopIcon = helper.ModContent.Load<Texture2D>("assets/item.png");
-        _builderIcon = helper.ModContent.HasFile("assets/builder.png")
+        string builderPath = Path.Combine(helper.DirectoryPath, "assets/builder.png");
+        _builderIcon = File.Exists(builderPath)
             ? helper.ModContent.Load<Texture2D>("assets/builder.png")
             : _shopIcon;
 
@@ -84,7 +86,7 @@ public class ModEntry : Mod
     {
         if (!Context.IsWorldReady || Game1.activeClickableMenu != null || !e.Button.IsActionButton()) return;
 
-        Vector2 tile = e.GrabTile;
+        Vector2 tile = e.Cursor.GrabTile;
         if (!Game1.currentLocation.Objects.TryGetValue(tile, out var obj))
             Game1.currentLocation.Objects.TryGetValue(Game1.player.GetGrabTile(), out obj);
         if (obj == null) return;
