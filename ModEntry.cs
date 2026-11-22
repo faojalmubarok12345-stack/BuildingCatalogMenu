@@ -108,7 +108,7 @@ public class ModEntry : Mod
         var held = Game1.player.ActiveObject;
         if (held != null && IsStationId(held.QualifiedItemId) && existingObj == null)
         {
-            if (Game1.currentLocation.isTileOccupiedForPlacement(tile, held))
+            if (Game1.currentLocation.IsTileOccupiedBy(tile))
                 return;
 
             var placed = (StardewValley.Object)ItemRegistry.Create(held.QualifiedItemId, 1);
