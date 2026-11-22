@@ -1,4 +1,3 @@
-using System.IO;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
@@ -16,11 +15,8 @@ public class ModEntry : Mod
 
     public override void Entry(IModHelper helper)
     {
-        _shopIcon = helper.ModContent.Load<Texture2D>("assets/item.png");
-        string builderPath = Path.Combine(helper.DirectoryPath, "assets/builder.png");
-        _builderIcon = File.Exists(builderPath)
-            ? helper.ModContent.Load<Texture2D>("assets/builder.png")
-            : _shopIcon;
+        _shopIcon = helper.ModContent.Load<Texture2D>("assets/shop.png");
+        _builderIcon = helper.ModContent.Load<Texture2D>("assets/build.png");
 
         helper.Events.Content.AssetRequested += OnAssetRequested;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
@@ -56,7 +52,7 @@ public class ModEntry : Mod
                         Name = "ShopStation",
                         DisplayName = "Shop Station",
                         Description = "Letakkan di lantai lalu klik untuk membuka katalog toko.",
-                        Type = "Interactive",
+                        Type = "Basic",
                         Category = 0,
                         Price = 2500,
                         Texture = "Mods/zall.worldcatalogue/shop",
@@ -71,7 +67,7 @@ public class ModEntry : Mod
                         Name = "BuilderStation",
                         DisplayName = "Builder Station",
                         Description = "Letakkan di lantai lalu klik untuk bangun, upgrade, dan pindah bangunan.",
-                        Type = "Interactive",
+                        Type = "Basic",
                         Category = 0,
                         Price = 5000,
                         Texture = "Mods/zall.worldcatalogue/build",
@@ -82,24 +78,49 @@ public class ModEntry : Mod
         }
     }
 
+    private bool IsStationId(string? qualifiedId) =>
+        qualifiedId == $"(O){ShopItemId}" || qualifiedId == $"(O){BuilderItemId}";
+
     private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
     {
-        if (!Context.IsWorldReady || Game1.activeClickableMenu != null || !e.Button.IsActionButton()) return;
+        if (!Context.IsWorldReady || Game1.activeClickableMenu != null) return;
+        if (!e.Button.IsActionButton() && !e.Button.IsUseToolButton()) return;
 
         Vector2 tile = e.Cursor.GrabTile;
-        if (!Game1.currentLocation.Objects.TryGetValue(tile, out var obj))
-            Game1.currentLocation.Objects.TryGetValue(Game1.player.GetGrabTile(), out obj);
-        if (obj == null) return;
-
-        if (obj.QualifiedItemId == $"(O){ShopItemId}")
+        if (!Game1.currentLocation.Objects.TryGetValue(tile, out var existingObj))
         {
-            Helper.Input.Suppress(e.Button);
-            Game1.activeClickableMenu = new ShopMenu();
+            tile = Game1.player.GetGrabTile();
+            Game1.currentLocation.Objects.TryGetValue(tile, out existingObj);
         }
-        else if (obj.QualifiedItemId == $"(O){BuilderItemId}")
+
+        // 1. Kalau di tile tersebut sudah ada station kita, klik untuk buka menu
+        if (existingObj != null && IsStationId(existingObj.QualifiedItemId) && e.Button.IsActionButton())
         {
             Helper.Input.Suppress(e.Button);
-            BuilderMenu.Open("Robin");
+            if (existingObj.QualifiedItemId == $"(O){ShopItemId}")
+                Game1.activeClickableMenu = new ShopMenu();
+            else
+                BuilderMenu.Open("Robin");
+            return;
+        }
+
+        // 2. Kalau pemain sedang memegang station di tangan dan tile kosong, letakkan ke lantai
+        var held = Game1.player.ActiveObject;
+        if (held != null && IsStationId(held.QualifiedItemId) && existingObj == null)
+        {
+            if (Game1.currentLocation.isTileOccupiedForPlacement(tile, held))
+                return;
+
+            var placed = (StardewValley.Object)ItemRegistry.Create(held.QualifiedItemId, 1);
+            placed.TileLocation = tile;
+            Game1.currentLocation.Objects[tile] = placed;
+
+            held.Stack--;
+            if (held.Stack <= 0)
+                Game1.player.removeItemFromInventory(held);
+
+            Game1.currentLocation.playSound("woodyStep");
+            Helper.Input.Suppress(e.Button);
         }
     }
 }
