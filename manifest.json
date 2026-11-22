@@ -1,0 +1,10 @@
+{
+  "Name": "Zall World Catalogue",
+  "Author": "Zall",
+  "Version": "1.0.0",
+  "Description": "Letakkan station di lantai lalu klik untuk membuka katalog toko atau menu bangunan.",
+  "UniqueID": "zall.worldcatalogue",
+  "EntryDll": "ZallWorldCatalogue.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": []
+}
