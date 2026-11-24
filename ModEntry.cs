@@ -15,7 +15,7 @@ public class ModEntry : Mod
 {
     private const string ShopItemId = "zall.worldcatalogue_Shop";
     private const string BuilderItemId = "zall.worldcatalogue_Build";
-    private const long MenuCooldownMs = 700;
+    private const long CloseMenuCooldownMs = 350;
 
     private Texture2D? _shopTexture;
     private Texture2D? _buildTexture;
@@ -36,9 +36,10 @@ public class ModEntry : Mod
 
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
     {
-        if (e.OldMenu != null || e.NewMenu != null)
+        // Jeda singkat hanya saat menu baru saja ditutup agar tap keluar tidak langsung memicu ulang
+        if (e.OldMenu != null && e.NewMenu == null)
         {
-            _ignoreInputUntilTick = Environment.TickCount64 + MenuCooldownMs;
+            _ignoreInputUntilTick = Environment.TickCount64 + CloseMenuCooldownMs;
             if (Context.IsWorldReady && Game1.player != null)
             {
                 Game1.player.controller = null;
@@ -197,8 +198,8 @@ public class ModEntry : Mod
         var stationObj = FindStationAt(location, cursorTile, grabTile, playerTile, out Vector2 stationTile);
         if (stationObj != null)
         {
-            // Angkat/hapus station jika pemain memakai Pickaxe atau Axe
-            if (Game1.player.CurrentTool is Pickaxe or Axe)
+            // Angkat/hapus station hanya saat menekan Use Tool sambil memegang Pickaxe atau Axe
+            if (e.Button.IsUseToolButton() && Game1.player.CurrentTool is Pickaxe or Axe)
             {
                 Helper.Input.Suppress(e.Button);
                 location.Objects.Remove(stationTile);
@@ -216,7 +217,6 @@ public class ModEntry : Mod
             if (e.Button.IsActionButton())
             {
                 Helper.Input.Suppress(e.Button);
-                _ignoreInputUntilTick = Environment.TickCount64 + MenuCooldownMs;
                 Game1.player.controller = null;
 
                 if (stationObj.QualifiedItemId == $"(O){ShopItemId}")
