@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -5,6 +6,8 @@ using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
 using StardewValley.GameData.Objects;
+using StardewValley.GameData.Shops;
+using StardewValley.Tools;
 
 namespace ZallWorldCatalogue;
 
@@ -12,9 +15,11 @@ public class ModEntry : Mod
 {
     private const string ShopItemId = "zall.worldcatalogue_Shop";
     private const string BuilderItemId = "zall.worldcatalogue_Build";
+    private const long MenuCooldownMs = 700;
 
     private Texture2D? _shopTexture;
     private Texture2D? _buildTexture;
+    private long _ignoreInputUntilTick;
 
     public override void Entry(IModHelper helper)
     {
@@ -23,9 +28,22 @@ public class ModEntry : Mod
 
         helper.Events.Content.AssetRequested += OnAssetRequested;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
+        helper.Events.Display.MenuChanged += OnMenuChanged;
 
         helper.ConsoleCommands.Add("give_shop_station", "Ambil Shop Station.", (_, _) => GiveItem(ShopItemId));
         helper.ConsoleCommands.Add("give_builder_station", "Ambil Builder Station.", (_, _) => GiveItem(BuilderItemId));
+    }
+
+    private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
+    {
+        if (e.OldMenu != null || e.NewMenu != null)
+        {
+            _ignoreInputUntilTick = Environment.TickCount64 + MenuCooldownMs;
+            if (Context.IsWorldReady && Game1.player != null)
+            {
+                Game1.player.controller = null;
+            }
+        }
     }
 
     private Texture2D? LoadOptionalTexture(IModHelper helper, string relativePath)
@@ -41,7 +59,7 @@ public class ModEntry : Mod
         {
             return helper.ModContent.Load<Texture2D>(relativePath);
         }
-        catch (System.Exception ex)
+        catch (Exception ex)
         {
             Monitor.Log($"Gagal memuat '{relativePath}': {ex.Message}", LogLevel.Error);
             return null;
@@ -78,7 +96,7 @@ public class ModEntry : Mod
                     {
                         Name = "ShopStation",
                         DisplayName = "Shop Station",
-                        Description = "Letakkan di lantai lalu klik untuk membuka katalog toko.",
+                        Description = "Letakkan di lantai lalu klik untuk membuka katalog toko. Pakai Pickaxe/Axe untuk mengangkat.",
                         Type = "Basic",
                         Category = 0,
                         Price = 2500,
@@ -93,7 +111,7 @@ public class ModEntry : Mod
                     {
                         Name = "BuilderStation",
                         DisplayName = "Builder Station",
-                        Description = "Letakkan di lantai lalu klik untuk bangun, upgrade, dan pindah bangunan.",
+                        Description = "Letakkan di lantai lalu klik untuk bangun, upgrade, dan pindah bangunan. Pakai Pickaxe/Axe untuk mengangkat.",
                         Type = "Basic",
                         Category = 0,
                         Price = 5000,
@@ -103,25 +121,69 @@ public class ModEntry : Mod
                 }
             });
         }
+
+        if (e.NameWithoutLocale.IsEquivalentTo("Data/Shops"))
+        {
+            e.Edit(asset =>
+            {
+                var shops = asset.AsDictionary<string, ShopData>().Data;
+                if (!shops.TryGetValue("SeedShop", out var seedShop))
+                    return;
+
+                bool hasShopStation = false;
+                bool hasBuilderStation = false;
+
+                foreach (var item in seedShop.Items)
+                {
+                    if (item.ItemId == $"(O){ShopItemId}") hasShopStation = true;
+                    if (item.ItemId == $"(O){BuilderItemId}") hasBuilderStation = true;
+                }
+
+                if (!hasShopStation)
+                {
+                    seedShop.Items.Add(new ShopItemData
+                    {
+                        Id = $"{ModManifest.UniqueID}_SeedShop_ShopStation",
+                        ItemId = $"(O){ShopItemId}",
+                        Price = 2500
+                    });
+                }
+
+                if (!hasBuilderStation)
+                {
+                    seedShop.Items.Add(new ShopItemData
+                    {
+                        Id = $"{ModManifest.UniqueID}_SeedShop_BuilderStation",
+                        ItemId = $"(O){BuilderItemId}",
+                        Price = 5000
+                    });
+                }
+            });
+        }
     }
 
     private static bool IsStationId(string? qualifiedId) =>
         qualifiedId == $"(O){ShopItemId}" || qualifiedId == $"(O){BuilderItemId}";
 
-    private StardewValley.Object? FindStationAt(GameLocation location, Vector2 cursorTile, Vector2 grabTile, Vector2 playerTile)
+    private static StardewValley.Object? FindStationAt(GameLocation location, Vector2 cursorTile, Vector2 grabTile, Vector2 playerTile, out Vector2 foundTile)
     {
         Vector2[] candidates = { cursorTile, grabTile, playerTile };
         foreach (var tile in candidates)
         {
             if (location.Objects.TryGetValue(tile, out var obj) && IsStationId(obj.QualifiedItemId))
+            {
+                foundTile = tile;
                 return obj;
+            }
         }
+        foundTile = Vector2.Zero;
         return null;
     }
 
     private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
     {
         if (!Context.IsWorldReady || Game1.activeClickableMenu != null) return;
+        if (Environment.TickCount64 < _ignoreInputUntilTick) return;
         if (!e.Button.IsActionButton() && !e.Button.IsUseToolButton()) return;
 
         var location = Game1.currentLocation;
@@ -131,23 +193,45 @@ public class ModEntry : Mod
         Vector2 grabTile = e.Cursor.GrabTile;
         Vector2 playerTile = Game1.player.GetGrabTile();
 
-        // 1. Cek apakah ada station yang dipencet/diklik
-        var stationObj = FindStationAt(location, cursorTile, grabTile, playerTile);
+        // 1. Cek apakah ada station di tile yang dituju
+        var stationObj = FindStationAt(location, cursorTile, grabTile, playerTile, out Vector2 stationTile);
         if (stationObj != null)
         {
-            Helper.Input.Suppress(e.Button);
-            if (stationObj.QualifiedItemId == $"(O){ShopItemId}")
+            // Angkat/hapus station jika pemain memakai Pickaxe atau Axe
+            if (Game1.player.CurrentTool is Pickaxe or Axe)
             {
-                Game1.activeClickableMenu = new ShopMenu();
+                Helper.Input.Suppress(e.Button);
+                location.Objects.Remove(stationTile);
+                location.playSound("axchop");
+
+                var pickedUp = ItemRegistry.Create(stationObj.QualifiedItemId, 1);
+                if (!Game1.player.addItemToInventoryBool(pickedUp))
+                {
+                    Game1.createItemDebris(pickedUp, stationTile * 64f + new Vector2(32f, 32f), -1, location);
+                }
+                return;
             }
-            else if (stationObj.QualifiedItemId == $"(O){BuilderItemId}")
+
+            // Buka menu saat Action button ditekan
+            if (e.Button.IsActionButton())
             {
-                BuilderMenu.Open("Robin");
+                Helper.Input.Suppress(e.Button);
+                _ignoreInputUntilTick = Environment.TickCount64 + MenuCooldownMs;
+                Game1.player.controller = null;
+
+                if (stationObj.QualifiedItemId == $"(O){ShopItemId}")
+                {
+                    Game1.activeClickableMenu = new ShopMenu();
+                }
+                else if (stationObj.QualifiedItemId == $"(O){BuilderItemId}")
+                {
+                    BuilderMenu.Open("Robin");
+                }
             }
             return;
         }
 
-        // 2. Kalau sedang memegang station dan tile kosong, letakkan ke lantai
+        // 2. Letakkan station dari tangan ke tile kosong
         var held = Game1.player.ActiveObject;
         Vector2 placeTile = grabTile;
         if (held != null && IsStationId(held.QualifiedItemId) && !location.Objects.ContainsKey(placeTile))
