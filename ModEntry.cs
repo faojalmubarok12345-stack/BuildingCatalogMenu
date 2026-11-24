@@ -1,3 +1,4 @@
+using System.IO;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using StardewModdingAPI;
@@ -11,18 +12,40 @@ public class ModEntry : Mod
 {
     private const string ShopItemId = "zall.worldcatalogue_Shop";
     private const string BuilderItemId = "zall.worldcatalogue_Build";
-    private Texture2D? _shopIcon, _builderIcon;
+
+    private Texture2D? _shopTexture;
+    private Texture2D? _buildTexture;
 
     public override void Entry(IModHelper helper)
     {
-        _shopIcon = helper.ModContent.Load<Texture2D>("assets/shop.png");
-        _builderIcon = helper.ModContent.Load<Texture2D>("assets/build.png");
+        _shopTexture = LoadOptionalTexture(helper, "assets/shop.png");
+        _buildTexture = LoadOptionalTexture(helper, "assets/build.png") ?? _shopTexture;
 
         helper.Events.Content.AssetRequested += OnAssetRequested;
         helper.Events.Input.ButtonPressed += OnButtonPressed;
 
         helper.ConsoleCommands.Add("give_shop_station", "Ambil Shop Station.", (_, _) => GiveItem(ShopItemId));
         helper.ConsoleCommands.Add("give_builder_station", "Ambil Builder Station.", (_, _) => GiveItem(BuilderItemId));
+    }
+
+    private Texture2D? LoadOptionalTexture(IModHelper helper, string relativePath)
+    {
+        string fullPath = Path.Combine(helper.DirectoryPath, relativePath);
+        if (!File.Exists(fullPath))
+        {
+            Monitor.Log($"File '{relativePath}' tidak ditemukan di folder mod.", LogLevel.Warn);
+            return null;
+        }
+
+        try
+        {
+            return helper.ModContent.Load<Texture2D>(relativePath);
+        }
+        catch (System.Exception ex)
+        {
+            Monitor.Log($"Gagal memuat '{relativePath}': {ex.Message}", LogLevel.Error);
+            return null;
+        }
     }
 
     private void GiveItem(string id)
@@ -33,11 +56,15 @@ public class ModEntry : Mod
 
     private void OnAssetRequested(object? sender, AssetRequestedEventArgs e)
     {
-        if (e.NameWithoutLocale.IsEquivalentTo("Mods/zall.worldcatalogue/shop") && _shopIcon != null)
-            e.LoadFrom(() => _shopIcon, AssetLoadPriority.Medium);
+        if (_shopTexture != null && e.NameWithoutLocale.IsEquivalentTo("Mods/zall.worldcatalogue/shop"))
+        {
+            e.LoadFrom(() => _shopTexture, AssetLoadPriority.Medium);
+        }
 
-        if (e.NameWithoutLocale.IsEquivalentTo("Mods/zall.worldcatalogue/build") && _builderIcon != null)
-            e.LoadFrom(() => _builderIcon, AssetLoadPriority.Medium);
+        if (_buildTexture != null && e.NameWithoutLocale.IsEquivalentTo("Mods/zall.worldcatalogue/build"))
+        {
+            e.LoadFrom(() => _buildTexture, AssetLoadPriority.Medium);
+        }
 
         if (e.NameWithoutLocale.IsEquivalentTo("Data/Objects"))
         {
@@ -55,7 +82,7 @@ public class ModEntry : Mod
                         Type = "Basic",
                         Category = 0,
                         Price = 2500,
-                        Texture = "Mods/zall.worldcatalogue/shop",
+                        Texture = _shopTexture != null ? "Mods/zall.worldcatalogue/shop" : null,
                         SpriteIndex = 0
                     };
                 }
@@ -70,7 +97,7 @@ public class ModEntry : Mod
                         Type = "Basic",
                         Category = 0,
                         Price = 5000,
-                        Texture = "Mods/zall.worldcatalogue/build",
+                        Texture = _buildTexture != null ? "Mods/zall.worldcatalogue/build" : null,
                         SpriteIndex = 0
                     };
                 }
@@ -78,48 +105,65 @@ public class ModEntry : Mod
         }
     }
 
-    private bool IsStationId(string? qualifiedId) =>
+    private static bool IsStationId(string? qualifiedId) =>
         qualifiedId == $"(O){ShopItemId}" || qualifiedId == $"(O){BuilderItemId}";
+
+    private StardewValley.Object? FindStationAt(GameLocation location, Vector2 cursorTile, Vector2 grabTile, Vector2 playerTile)
+    {
+        Vector2[] candidates = { cursorTile, grabTile, playerTile };
+        foreach (var tile in candidates)
+        {
+            if (location.Objects.TryGetValue(tile, out var obj) && IsStationId(obj.QualifiedItemId))
+                return obj;
+        }
+        return null;
+    }
 
     private void OnButtonPressed(object? sender, ButtonPressedEventArgs e)
     {
         if (!Context.IsWorldReady || Game1.activeClickableMenu != null) return;
         if (!e.Button.IsActionButton() && !e.Button.IsUseToolButton()) return;
 
-        Vector2 tile = e.Cursor.GrabTile;
-        if (!Game1.currentLocation.Objects.TryGetValue(tile, out var existingObj))
-        {
-            tile = Game1.player.GetGrabTile();
-            Game1.currentLocation.Objects.TryGetValue(tile, out existingObj);
-        }
+        var location = Game1.currentLocation;
+        if (location == null) return;
 
-        // 1. Kalau di tile tersebut sudah ada station kita, klik untuk buka menu
-        if (existingObj != null && IsStationId(existingObj.QualifiedItemId) && e.Button.IsActionButton())
+        Vector2 cursorTile = e.Cursor.Tile;
+        Vector2 grabTile = e.Cursor.GrabTile;
+        Vector2 playerTile = Game1.player.GetGrabTile();
+
+        // 1. Cek apakah ada station yang dipencet/diklik
+        var stationObj = FindStationAt(location, cursorTile, grabTile, playerTile);
+        if (stationObj != null)
         {
             Helper.Input.Suppress(e.Button);
-            if (existingObj.QualifiedItemId == $"(O){ShopItemId}")
+            if (stationObj.QualifiedItemId == $"(O){ShopItemId}")
+            {
                 Game1.activeClickableMenu = new ShopMenu();
-            else
+            }
+            else if (stationObj.QualifiedItemId == $"(O){BuilderItemId}")
+            {
                 BuilderMenu.Open("Robin");
+            }
             return;
         }
 
-        // 2. Kalau pemain sedang memegang station di tangan dan tile kosong, letakkan ke lantai
+        // 2. Kalau sedang memegang station dan tile kosong, letakkan ke lantai
         var held = Game1.player.ActiveObject;
-        if (held != null && IsStationId(held.QualifiedItemId) && existingObj == null)
+        Vector2 placeTile = grabTile;
+        if (held != null && IsStationId(held.QualifiedItemId) && !location.Objects.ContainsKey(placeTile))
         {
-            if (Game1.currentLocation.IsTileOccupiedBy(tile))
+            if (location.IsTileOccupiedBy(placeTile, CollisionMask.All))
                 return;
 
-            var placed = (StardewValley.Object)ItemRegistry.Create(held.QualifiedItemId, 1);
-            placed.TileLocation = tile;
-            Game1.currentLocation.Objects[tile] = placed;
+            var placed = ItemRegistry.Create<StardewValley.Object>(held.QualifiedItemId, 1);
+            placed.TileLocation = placeTile;
+            location.Objects[placeTile] = placed;
 
             held.Stack--;
             if (held.Stack <= 0)
                 Game1.player.removeItemFromInventory(held);
 
-            Game1.currentLocation.playSound("woodyStep");
+            location.playSound("woodyStep");
             Helper.Input.Suppress(e.Button);
         }
     }
