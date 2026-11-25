@@ -36,7 +36,6 @@ public class ModEntry : Mod
 
     private void OnMenuChanged(object? sender, MenuChangedEventArgs e)
     {
-        // Jeda singkat hanya saat menu baru saja ditutup agar tap keluar tidak langsung memicu ulang
         if (e.OldMenu != null && e.NewMenu == null)
         {
             _ignoreInputUntilTick = Environment.TickCount64 + CloseMenuCooldownMs;
@@ -166,17 +165,21 @@ public class ModEntry : Mod
     private static bool IsStationId(string? qualifiedId) =>
         qualifiedId == $"(O){ShopItemId}" || qualifiedId == $"(O){BuilderItemId}";
 
-    private static StardewValley.Object? FindStationAt(GameLocation location, Vector2 cursorTile, Vector2 grabTile, Vector2 playerTile, out Vector2 foundTile)
+    private static StardewValley.Object? FindStationNearby(GameLocation location, Vector2 centerTile, out Vector2 foundTile)
     {
-        Vector2[] candidates = { cursorTile, grabTile, playerTile };
-        foreach (var tile in candidates)
+        for (int dx = -1; dx <= 1; dx++)
         {
-            if (location.Objects.TryGetValue(tile, out var obj) && IsStationId(obj.QualifiedItemId))
+            for (int dy = -1; dy <= 1; dy++)
             {
-                foundTile = tile;
-                return obj;
+                Vector2 check = new Vector2(centerTile.X + dx, centerTile.Y + dy);
+                if (location.Objects.TryGetValue(check, out var obj) && IsStationId(obj.QualifiedItemId))
+                {
+                    foundTile = check;
+                    return obj;
+                }
             }
         }
+
         foundTile = Vector2.Zero;
         return null;
     }
@@ -185,21 +188,26 @@ public class ModEntry : Mod
     {
         if (!Context.IsWorldReady || Game1.activeClickableMenu != null) return;
         if (Environment.TickCount64 < _ignoreInputUntilTick) return;
-        if (!e.Button.IsActionButton() && !e.Button.IsUseToolButton()) return;
+
+        bool isAction = e.Button.IsActionButton() || e.Button == SButton.MouseRight;
+        bool isUseTool = e.Button.IsUseToolButton() || e.Button == SButton.MouseLeft;
+        if (!isAction && !isUseTool) return;
 
         var location = Game1.currentLocation;
         if (location == null) return;
 
-        Vector2 cursorTile = e.Cursor.Tile;
-        Vector2 grabTile = e.Cursor.GrabTile;
-        Vector2 playerTile = Game1.player.GetGrabTile();
+        Vector2 targetTile = e.Cursor.Tile != Vector2.Zero ? e.Cursor.Tile : e.Cursor.GrabTile;
+        if (targetTile == Vector2.Zero)
+            targetTile = Game1.player.GetGrabTile();
 
-        // 1. Cek apakah ada station di tile yang dituju
-        var stationObj = FindStationAt(location, cursorTile, grabTile, playerTile, out Vector2 stationTile);
+        // 1. Cek station di sekitar targetTile atau tile grab pemain
+        var stationObj = FindStationNearby(location, targetTile, out Vector2 stationTile)
+            ?? FindStationNearby(location, Game1.player.GetGrabTile(), out stationTile);
+
         if (stationObj != null)
         {
-            // Angkat/hapus station hanya saat menekan Use Tool sambil memegang Pickaxe atau Axe
-            if (e.Button.IsUseToolButton() && Game1.player.CurrentTool is Pickaxe or Axe)
+            // Angkat station bila memegang Pickaxe/Axe dan menekan Use Tool
+            if (isUseTool && Game1.player.CurrentTool is Pickaxe or Axe)
             {
                 Helper.Input.Suppress(e.Button);
                 location.Objects.Remove(stationTile);
@@ -213,19 +221,30 @@ public class ModEntry : Mod
                 return;
             }
 
-            // Buka menu saat Action button ditekan
-            if (e.Button.IsActionButton())
+            // Buka menu saat menekan Action / tap
+            if (isAction || isUseTool)
             {
                 Helper.Input.Suppress(e.Button);
                 Game1.player.controller = null;
+                _ignoreInputUntilTick = Environment.TickCount64 + CloseMenuCooldownMs;
 
-                if (stationObj.QualifiedItemId == $"(O){ShopItemId}")
+                try
                 {
-                    Game1.activeClickableMenu = new ShopMenu();
+                    if (stationObj.QualifiedItemId == $"(O){ShopItemId}")
+                    {
+                        Monitor.Log($"Membuka ShopMenu dari tile {stationTile} via {e.Button}.", LogLevel.Trace);
+                        Game1.activeClickableMenu = new ShopMenu();
+                    }
+                    else if (stationObj.QualifiedItemId == $"(O){BuilderItemId}")
+                    {
+                        Monitor.Log($"Membuka BuilderMenu dari tile {stationTile} via {e.Button}.", LogLevel.Trace);
+                        BuilderMenu.Open("Robin");
+                    }
                 }
-                else if (stationObj.QualifiedItemId == $"(O){BuilderItemId}")
+                catch (Exception ex)
                 {
-                    BuilderMenu.Open("Robin");
+                    Monitor.Log($"Gagal membuka menu station: {ex}", LogLevel.Error);
+                    Game1.addHUDMessage(new HUDMessage("Gagal membuka menu station (cek log SMAPI).", HUDMessage.error_type));
                 }
             }
             return;
@@ -233,7 +252,7 @@ public class ModEntry : Mod
 
         // 2. Letakkan station dari tangan ke tile kosong
         var held = Game1.player.ActiveObject;
-        Vector2 placeTile = grabTile;
+        Vector2 placeTile = e.Cursor.GrabTile != Vector2.Zero ? e.Cursor.GrabTile : Game1.player.GetGrabTile();
         if (held != null && IsStationId(held.QualifiedItemId) && !location.Objects.ContainsKey(placeTile))
         {
             if (location.IsTileOccupiedBy(placeTile, CollisionMask.All))
